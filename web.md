@@ -114,7 +114,7 @@ Hədəf tətbiqin arxa fonda Linux və ya Windows işlətdiyinə əmin olmaq və
 
 
 
-
+---------
 
 
 
